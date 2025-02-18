@@ -1,0 +1,10 @@
+datasets
+.venv
+__pycache__
+*.pyc
+__init__.py
+*.ipynb_checkpoints
+*.log
+*.log.*
+data
+preprocessing
