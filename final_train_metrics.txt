@@ -1,0 +1,8 @@
+Update #4950
+Train Recon Error: 0.044763
+Val Recon Error: 0.045517
+Train Loss: 0.058987
+Val Loss: 0.060123
+Train Perplexity: 58.260014
+Val Perplexity: 58.363058
+Codebook Usage: 15.8%

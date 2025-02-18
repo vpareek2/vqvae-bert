@@ -1,162 +1,167 @@
+# Text-to-Abstract-Art Generation: Design Document
 
-## Phase 1: Data Preparation and VQ-VAE Training
+## Project Overview
+Create a lightweight system for generating abstract art from 3-5 descriptive adjectives. Compare three different approaches for text encoding while using a pre-trained VQ-VAE for image generation.
 
-### 1.1 Dataset Preparation
-- Set up initial dataset of 2,700 abstract art images
-- Implement data preprocessing pipeline
-  - Image resizing and normalization
-  - Data augmentation (rotations, flips, color variations)
-  - Train/validation/test split
-- Create data quality checks
-- Begin collecting additional images for future expansion
+## Dataset
+- Original dataset: ~9,735 abstract art images
+  - Training: 7,602 images
+  - Test: 2,133 images
+- Annotation plan:
+  - 3-5 descriptive adjectives per image
+  - Use LLM for initial annotation
+  - Focus on artistic qualities and visual characteristics
+  - Create controlled vocabulary while allowing for flexibility
 
-### 1.2 Base VQ-VAE Training
-- Initial training run with default parameters
-- Hyperparameter optimization
-  - Experiment with embedding dimensions
-  - Adjust number of embeddings
-  - Fine-tune beta value
-- Model evaluation
-  - Image reconstruction quality
-  - Latent space analysis
-  - Generation diversity
-- Save and document best performing models
+## Approaches to Compare
 
-### 1.3 Generation Testing
-- Implement random sampling from latent space
-- Generate test images
-- Evaluate quality and diversity
-- Document failure cases and limitations
+### 1. CLIP Text Encoder
+- Size: ~63M parameters
+- Advantages:
+  - Pre-trained on visual-language pairs
+  - Strong understanding of visual concepts
+  - Good zero-shot capabilities
+- Considerations:
+  - Larger than ideal
+  - May need adaptation for artistic domain
+  - Built for longer descriptions
 
-## Phase 2: Text Integration Preparation
+### 2. DistilBERT
+- Size: ~66M parameters
+- Advantages:
+  - Strong language understanding
+  - Can handle unseen words well
+  - Well-documented, easy to implement
+- Considerations:
+  - Overengineered for simple adjectives
+  - Not specifically trained for visual concepts
+  - Largest of the three options
 
-### 2.1 Text Model Setup
-- Set up DistilBERT environment
-- Create text preprocessing pipeline
-- Test basic text embedding generation
-- Document embedding characteristics
+### 3. Custom Lightweight Transformer
+- Target size: <10M parameters
+- Design goals:
+  - Minimal layers (2-3 transformer encoders)
+  - Focused vocabulary
+  - Optimized for artistic adjectives
+  - Efficient attention mechanism
+- Advantages:
+  - Smallest footprint
+  - Domain-specific
+  - Fast inference
+- Considerations:
+  - Need to handle unseen words
+  - Balance between size and capability
+  - Requires careful architecture design
 
-### 2.2 Dataset Enhancement
-- Create text-image paired dataset
-  - Collect descriptive adjectives for existing images
-  - Define vocabulary/grammar for descriptions
-  - Create annotation guidelines
-- Implement text data preprocessing
-- Create validation process for text-image pairs
+## Integration with VQ-VAE
 
-### 2.3 Architecture Enhancement
-- Design conditioning mechanism
-  - Modify decoder architecture
-  - Implement embedding combination strategy
-  - Add necessary layers for text condition processing
-- Create testing framework for modified architecture
+Current VQ-VAE metrics:
+- Reconstruction Error: ~0.045
+- Codebook Usage: 15.8%
+- Perplexity: ~58
 
-## Phase 3: Combined Model Development
+Integration strategy:
+1. Map text embeddings to VQ-VAE latent space
+2. Fine-tune VQ-VAE to improve codebook utilization
+3. End-to-end training with text conditioning
 
-### 3.1 Integration
-- Combine VQ-VAE and text conditioning
-- Implement end-to-end pipeline
-- Create debugging tools
-- Set up monitoring for both image and text components
+## Evaluation Framework
 
-### 3.2 Training
-- Train combined model
-- Monitor convergence
-- Evaluate text-to-image generation quality
-- Fine-tune hyperparameters
-- Document training process and results
+### Metrics
+1. Model Efficiency
+   - Parameter count
+   - Disk space
+   - Memory usage
+   - Inference time
+   - Training time and resources
 
-### 3.3 Evaluation
-- Define evaluation metrics
-- Create test suite
-- Evaluate:
-  - Image quality
-  - Text adherence
-  - Generation diversity
-  - Model robustness
+2. Generation Quality
+   - FID scores
+   - Inception scores
+   - Human evaluation
+   - Style consistency
 
-## Phase 4: Deployment and Refinement
+3. Text Understanding
+   - Accuracy on seen adjectives
+   - Zero-shot performance
+   - Attribute control accuracy
+   - Interpolation smoothness
 
-### 4.1 System Integration
-- Create user interface
-- Implement input validation
-- Set up generation pipeline
-- Create error handling
+### Ablation Studies
+1. Architecture components
+   - Embedding dimensions
+   - Number of layers
+   - Attention mechanisms
+   - Vocabulary size
 
-### 4.2 Optimization
-- Optimize model size
-- Improve generation speed
-- Reduce resource usage
-- Document performance characteristics
+2. Training strategies
+   - End-to-end vs frozen VQ-VAE
+   - Learning rate scheduling
+   - Loss function components
+   - Data augmentation impact
 
-### 4.3 Documentation and Maintenance
-- Create technical documentation
-- Document user guidelines
-- Set up monitoring
-- Create maintenance schedule
-
-## Timeline Estimates
-
-### Phase 1
-- Dataset Preparation: 1-2 weeks
-- Base VQ-VAE Training: 2-3 weeks
-- Generation Testing: 1 week
-
-### Phase 2
-- Text Model Setup: 1 week
-- Dataset Enhancement: 2-3 weeks
-- Architecture Enhancement: 1-2 weeks
-
-### Phase 3
-- Integration: 1-2 weeks
-- Training: 2-3 weeks
-- Evaluation: 1 week
-
-### Phase 4
-- System Integration: 1-2 weeks
-- Optimization: 1-2 weeks
-- Documentation: 1 week
-
-Total Estimated Timeline: 14-22 weeks
-
-## Key Metrics for Success
-
-### Image Quality
-- Reconstruction fidelity
-- Generation diversity
-- Visual coherence
-- Style consistency
-
-### Text Conditioning
-- Attribute accuracy
-- Style adherence
-- Consistency with descriptions
-- Generation reliability
-
-### System Performance
-- Generation speed
-- Resource usage
-- Stability
-- User satisfaction
-
-## Risk Factors
-
-### Technical Risks
-- Dataset size limitations
-- Training instability
-- Mode collapse
-- Poor text-image alignment
-
-### Mitigation Strategies
-- Regular evaluation checkpoints
-- Incremental feature addition
-- Comprehensive testing
-- Continuous documentation
+## Success Criteria
+1. Lightweight model achieves comparable results to larger models
+2. Handles basic artistic vocabulary reliably
+3. Reasonable performance on unseen adjectives
+4. Fast inference time (<100ms on GPU)
+5. Small deployment size (<100MB)
 
 ## Next Steps
 
-1. Begin dataset preparation
-2. Set up development environment
-3. Implement basic VQ-VAE training
-4. Create evaluation framework
-5. Plan detailed Phase 1 implementation
+### Phase 1: Dataset Preparation
+1. Implement LLM annotation pipeline
+2. Create annotation guidelines
+3. Validate annotations
+4. Create train/val/test splits
+
+### Phase 2: Model Implementation
+1. Set up evaluation framework
+2. Implement all three approaches
+3. Create unified training pipeline
+4. Develop monitoring tools
+
+### Phase 3: Training and Evaluation
+1. Train all models
+2. Conduct ablation studies
+3. Perform comparative analysis
+4. Document findings
+
+### Phase 4: Optimization
+1. Refine best performing approach
+2. Optimize for deployment
+3. Create demo interface
+4. Document final architecture
+
+## Technical Considerations
+
+### Development Environment
+- PyTorch for implementation
+- Weights & Biases for experiment tracking
+- GPU requirements: 8GB+ VRAM
+- Docker for reproducibility
+
+### Deployment Considerations
+- Model quantization options
+- Batch inference capabilities
+- API design for service integration
+- Error handling for invalid inputs
+
+## Risk Mitigation
+
+1. Dataset Quality
+   - Manual validation of subset of annotations
+   - Regular quality checks
+   - Backup annotation strategies
+
+2. Technical Risks
+   - Regular checkpointing
+   - Multiple evaluation metrics
+   - Fallback architectures
+   - Progressive model scaling
+
+3. Performance Risks
+   - Clear baseline metrics
+   - Regular performance reviews
+   - Multiple optimization strategies
+   - Flexible architecture design
