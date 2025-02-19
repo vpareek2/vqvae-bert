@@ -12,3 +12,4 @@ results/
 priv.txt
 .DS_Store
 *.DS_Store
+ckpt/

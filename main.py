@@ -26,7 +26,7 @@ parser.add_argument("--n_embeddings", type=int, default=512)
 parser.add_argument("--beta", type=float, default=.5)
 parser.add_argument("--learning_rate", type=float, default=3e-4)
 parser.add_argument("--log_interval", type=int, default=50)
-parser.add_argument("--dataset", type=str, default='CIFAR10')
+parser.add_argument("--dataset", type=str, default='BLOCK')
 parser.add_argument("-save", action="store_true")
 parser.add_argument("--filename", type=str, default=timestamp)
 parser.add_argument("--checkpoint_dir", type=str, default='checkpoints')
@@ -100,6 +100,8 @@ def validate(model, validation_loader, device, x_val_var):
     }
 
 def train():
+    results_dir = Path('results')
+    results_dir.mkdir(exist_ok=True, parents=True)
     best_val_loss = float('inf')
     best_codebook_usage = 0.0
     checkpoint_dir = Path(args.checkpoint_dir)

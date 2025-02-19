@@ -1,3 +1,4 @@
+Run 1 Final metrics
 Update #4950
 Train Recon Error: 0.044763
 Val Recon Error: 0.045517
@@ -6,3 +7,13 @@ Val Loss: 0.060123
 Train Perplexity: 58.260014
 Val Perplexity: 58.363058
 Codebook Usage: 15.8%
+
+Run 2 Final Metrics
+Update #6950
+Train Recon Error: 0.034931
+Val Recon Error: 0.034958
+Train Loss: 0.046048
+Val Loss: 0.046043
+Train Perplexity: 109.671242
+Val Perplexity: 110.015327
+Codebook Usage: 27.9%
