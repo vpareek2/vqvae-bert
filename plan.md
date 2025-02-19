@@ -1,3 +1,192 @@
+# Text-to-Latent Space Mapping Design Document
+
+## Overview
+
+This document outlines the design for mapping text descriptions to VQ-VAE latent representations for abstract art generation. The system uses a lightweight transformer to predict latent codes that can be decoded by a pre-trained VQ-VAE.
+
+## Current VQ-VAE Metrics
+- Reconstruction Error: ~0.045
+- Codebook Usage: 15.8%
+- Perplexity: ~58
+- Embedding Dimension: 64
+- Number of Codebook Vectors: 512
+
+## System Architecture
+
+### 1. Lightweight Transformer
+Target specifications:
+- 2-3 transformer encoder layers
+- Initial embedding dimension: 128-256
+- Vocabulary focused on artistic adjectives
+- Target size: <10M parameters
+
+Components:
+```
+Input Text -> Tokenization -> Embedding Layer -> Transformer Layers -> Output Projection
+```
+
+### 2. Latent Space Mapping
+
+Initial approach: Direct Prediction
+- Input: Transformer output embeddings
+- Output: Logits over codebook entries (512 classes)
+- Loss: Cross-entropy between predicted and actual codebook indices
+
+Alternative approaches (if needed):
+1. Contrastive Learning
+   - Optimize similarity between text and latent embeddings
+   - Requires careful negative sample selection
+
+2. Flow-based Mapping
+   - More flexible distribution modeling
+   - Higher computational cost
+
+3. Score-based/Diffusion
+   - More stable but slower inference
+   - Could be overkill for initial implementation
+
+## Training Pipeline
+
+### Data Preparation
+1. For each training image:
+   - Extract VQ-VAE latent representation
+   - Store corresponding text descriptions
+   - Create train/val/test splits
+
+### Training Process
+1. Text Processing:
+   - Tokenize input adjectives
+   - Apply any augmentations/variations
+
+2. Forward Pass:
+   - Generate text embeddings
+   - Map to VQ-VAE latent space
+   - Compare with ground truth latents
+
+3. Loss Computation:
+   - Primary: Cross-entropy loss
+   - Optional: Additional regularization terms
+
+4. Validation:
+   - Monitor prediction accuracy
+   - Check generated image quality
+   - Track latent space coverage
+
+## Inference Pipeline
+
+```
+1. Input Text
+   ↓
+2. Transformer Encoding
+   ↓
+3. Latent Space Mapping
+   ↓
+4. VQ-VAE Decoding
+   ↓
+5. Generated Image
+```
+
+## Implementation Phases
+
+### Phase 1: Basic Implementation
+1. Set up transformer architecture
+2. Implement direct prediction mapping
+3. Create basic training loop
+4. Establish baseline metrics
+
+### Phase 2: Refinement
+1. Optimize transformer size/layers
+2. Improve latent prediction accuracy
+3. Add regularization if needed
+4. Implement validation pipeline
+
+### Phase 3: Optimization
+1. Fine-tune hyperparameters
+2. Optimize inference speed
+3. Improve latent space coverage
+4. Add any necessary fallback strategies
+
+## Evaluation Metrics
+
+### Technical Metrics
+1. Model Size
+   - Parameter count
+   - Memory usage
+   - Disk space
+
+2. Performance
+   - Inference time
+   - Training time
+   - GPU memory usage
+
+### Quality Metrics
+1. Prediction Accuracy
+   - Latent reconstruction loss
+   - Codebook usage distribution
+   - Text-latent alignment score
+
+2. Generation Quality
+   - Image reconstruction quality
+   - Style consistency
+   - Attribute accuracy
+
+## Success Criteria
+1. Inference time < 100ms
+2. Model size < 10MB
+3. Reasonable latent prediction accuracy
+4. Consistent style generation
+5. Good attribute control
+
+## Future Improvements
+1. More sophisticated mapping approaches
+2. Better text embedding techniques
+3. Improved latent space coverage
+4. Enhanced attribute control
+5. Optimization for specific hardware
+
+## Dependencies
+
+### Required
+- PyTorch
+- Trained VQ-VAE model
+- Text tokenization utilities
+
+### Optional
+- Weights & Biases for tracking
+- Visualization tools
+- Testing framework
+
+## Notes and Considerations
+
+### Training Efficiency
+- Pre-compute VQ-VAE latents
+- Use efficient data loading
+- Implement early stopping
+- Monitor resource usage
+
+### Potential Challenges
+1. Sparse latent space coverage
+2. Mode collapse in generation
+3. Attribute consistency
+4. Training stability
+
+### Mitigation Strategies
+1. Start simple, add complexity as needed
+2. Regular evaluation checkpoints
+3. Careful hyperparameter tuning
+4. Progressive model scaling
+
+## Next Steps
+
+1. Implement basic transformer
+2. Set up data pipeline
+3. Create training loop
+4. Establish baseline metrics
+5. Begin iterative improvement
+
+Remember to keep the implementation simple initially and only add complexity where metrics show it's needed.
+
+
 # Text-to-Abstract-Art Generation: Design Document
 
 ## Project Overview
