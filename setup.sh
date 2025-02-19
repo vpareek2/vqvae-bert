@@ -8,7 +8,7 @@ echo "Starting setup..."
 # 1. Update and install vim and unzip
 echo "Updating system and installing required packages..."
 apt update
-apt install -y vim unzip
+apt install -y vim unzip nano python3-opencv
 
 # 2. Check CUDA version
 echo "CUDA version:"

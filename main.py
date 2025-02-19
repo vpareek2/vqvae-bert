@@ -16,19 +16,21 @@ parser = argparse.ArgumentParser()
 # Hyperparameters
 timestamp = utils.readable_timestamp()
 
-parser.add_argument("--batch_size", type=int, default=32)
-parser.add_argument("--n_updates", type=int, default=5000)
+parser.add_argument("--batch_size", type=int, default=128)
+parser.add_argument("--n_updates", type=int, default=7000)
 parser.add_argument("--n_hiddens", type=int, default=128)
-parser.add_argument("--n_residual_hiddens", type=int, default=32)
+parser.add_argument("--n_residual_hiddens", type=int, default=48)
 parser.add_argument("--n_residual_layers", type=int, default=2)
 parser.add_argument("--embedding_dim", type=int, default=64)
 parser.add_argument("--n_embeddings", type=int, default=512)
-parser.add_argument("--beta", type=float, default=.25)
+parser.add_argument("--beta", type=float, default=.5)
 parser.add_argument("--learning_rate", type=float, default=3e-4)
 parser.add_argument("--log_interval", type=int, default=50)
 parser.add_argument("--dataset", type=str, default='CIFAR10')
 parser.add_argument("-save", action="store_true")
 parser.add_argument("--filename", type=str, default=timestamp)
+parser.add_argument("--checkpoint_dir", type=str, default='checkpoints')
+parser.add_argument("--checkpoint_interval", type=int, default=500)
 
 args = parser.parse_args()
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -98,6 +100,11 @@ def validate(model, validation_loader, device, x_val_var):
     }
 
 def train():
+    best_val_loss = float('inf')
+    best_codebook_usage = 0.0
+    checkpoint_dir = Path(args.checkpoint_dir)
+    checkpoint_dir.mkdir(exist_ok=True, parents=True)
+
     for i in range(args.n_updates):
         (x, _) = next(iter(training_loader))
         x = x.to(device)
@@ -129,6 +136,28 @@ def train():
                     grid_path
                 )
                 val_metrics = validate(model, validation_loader, device, x_train_var)
+
+                # Save periodic checkpoint
+                if i % args.checkpoint_interval == 0:
+                    checkpoint_path = checkpoint_dir / f'checkpoint_{i:06d}.pt'
+                    torch.save({
+                        'iteration': i,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'val_metrics': val_metrics,
+                        'args': args,
+                    }, checkpoint_path)
+
+                # Save best model based on validation loss
+                if val_metrics['loss'] < best_val_loss:
+                    best_val_loss = val_metrics['loss']
+                    torch.save({
+                        'iteration': i,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'val_metrics': val_metrics,
+                        'args': args,
+                    }, checkpoint_dir / 'best_model.pt')
 
                 print(
                     f'Update #{i}',
