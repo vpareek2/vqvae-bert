@@ -7,7 +7,7 @@ import wandb
 from pathlib import Path
 from tqdm import tqdm
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Dict
 
 @dataclass
 class TrainingConfig:
@@ -39,6 +39,141 @@ class TrainingConfig:
     wandb_project: Optional[str] = None
     log_steps: int = 10
 
+class TransformerMetrics:
+    def __init__(self, n_embeddings: int, device: torch.device):
+        """Initialize metrics calculator."""
+        self.n_embeddings = n_embeddings
+        self.device = device
+
+    def calculate_metrics(self, outputs: torch.Tensor, targets: torch.Tensor) -> Dict:
+        """
+        Calculate comprehensive metrics for text-to-latent prediction.
+
+        Args:
+            outputs: Model predictions (batch_size, height, width, n_embeddings)
+            targets: Ground truth codes (batch_size, height, width)
+
+        Returns:
+            dict: Dictionary of metrics
+        """
+        batch_size = outputs.size(0)
+
+        # 1. Top-k accuracies (k=1,3,5)
+        topk_acc = {}
+        for k in [1, 3, 5]:
+            _, pred_topk = outputs.topk(k, dim=-1)
+            correct_topk = torch.any(pred_topk == targets.unsqueeze(-1), dim=-1)
+            topk_acc[f'top{k}_acc'] = correct_topk.float().mean().item()
+
+        # 2. Per-region accuracy (divide spatial dimensions into 3x3 grid)
+        h, w = targets.shape[1:3]
+        h_splits = torch.linspace(0, h, 4, dtype=torch.long)
+        w_splits = torch.linspace(0, w, 4, dtype=torch.long)
+        region_acc = torch.zeros(9, device=self.device)
+
+        idx = 0
+        for i in range(3):
+            for j in range(3):
+                region_pred = outputs[:, h_splits[i]:h_splits[i+1], w_splits[j]:w_splits[j+1]]
+                region_target = targets[:, h_splits[i]:h_splits[i+1], w_splits[j]:w_splits[j+1]]
+
+                pred_indices = region_pred.argmax(dim=-1)
+                region_acc[idx] = (pred_indices == region_target).float().mean()
+                idx += 1
+
+        # 3. Codebook usage distribution similarity
+        pred_dist = torch.zeros(self.n_embeddings, device=self.device)
+        target_dist = torch.zeros(self.n_embeddings, device=self.device)
+
+        pred_indices = outputs.argmax(dim=-1)
+        for i in range(self.n_embeddings):
+            pred_dist[i] = (pred_indices == i).float().mean()
+            target_dist[i] = (targets == i).float().mean()
+
+        distribution_similarity = F.cosine_similarity(pred_dist.unsqueeze(0),
+                                                    target_dist.unsqueeze(0))[0].item()
+
+        # 4. Spatial coherence score
+        # How often neighboring predictions match when neighboring targets match
+        pred_matches = (pred_indices[:, :-1, :] == pred_indices[:, 1:, :])
+        target_matches = (targets[:, :-1, :] == targets[:, 1:, :])
+        vertical_coherence = (pred_matches == target_matches).float().mean().item()
+
+        pred_matches = (pred_indices[:, :, :-1] == pred_indices[:, :, 1:])
+        target_matches = (targets[:, :, :-1] == targets[:, :, 1:])
+        horizontal_coherence = (pred_matches == target_matches).float().mean().item()
+
+        # 5. Average prediction confidence
+        confidence = torch.softmax(outputs, dim=-1).amax(dim=-1).mean().item()
+
+        return {
+            'exact_match_acc': topk_acc['top1_acc'],
+            'top3_acc': topk_acc['top3_acc'],
+            'top5_acc': topk_acc['top5_acc'],
+            'region_accuracies': region_acc.tolist(),
+            'avg_region_acc': region_acc.mean().item(),
+            'distribution_similarity': distribution_similarity,
+            'spatial_coherence': (vertical_coherence + horizontal_coherence) / 2,
+            'confidence': confidence
+        }
+
+def validate_training_setup(
+    train_dataset,
+    val_dataset,
+    model,
+    config: TrainingConfig
+) -> None:
+    """
+    Validate training setup before starting.
+
+    Args:
+        train_dataset: Training dataset
+        val_dataset: Validation dataset
+        model: Model instance
+        config: Training configuration
+
+    Raises:
+        ValueError: If validation fails
+    """
+    # Check dataset sizes
+    if len(train_dataset) == 0:
+        raise ValueError("Training dataset is empty")
+    if len(val_dataset) == 0:
+        raise ValueError("Validation dataset is empty")
+
+    # Get a sample batch
+    sample_tokens, sample_codes = train_dataset[0]
+
+    # Check shapes
+    expected_output_shape = sample_codes.shape
+    if not hasattr(model, 'output_dim'):
+        raise ValueError("Model must have output_dim attribute")
+
+    # Check device availability
+    if config.mixed_precision and not torch.cuda.is_available():
+        print("Warning: Mixed precision training enabled but CUDA is not available")
+
+    # Check vocabulary coverage
+    unique_tokens = set()
+    for i in range(min(1000, len(train_dataset))):  # Check first 1000 samples
+        tokens, _ = train_dataset[i]
+        unique_tokens.update(tokens.tolist())
+    if max(unique_tokens) >= train_dataset.vocab_size:
+        raise ValueError("Dataset contains token IDs outside vocabulary range")
+
+    # Print training setup summary
+    print("\nTraining Setup Summary:")
+    print(f"Training samples: {len(train_dataset)}")
+    print(f"Validation samples: {len(val_dataset)}")
+    print(f"Vocabulary size: {train_dataset.vocab_size}")
+    print(f"Input sequence length: {sample_tokens.shape}")
+    print(f"Target code shape: {sample_codes.shape}")
+    print(f"Device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}")
+    print(f"Mixed precision: {config.mixed_precision}")
+    print(f"Batch size: {config.batch_size}")
+    print(f"Learning rate: {config.learning_rate}")
+    print(f"Number of epochs: {config.epochs}\n")
+
 class Trainer:
     def __init__(
         self,
@@ -52,6 +187,9 @@ class Trainer:
 
         # Set up model
         self.model = model.to(self.device)
+
+        # Initialize metrics calculator
+        self.metrics = TransformerMetrics(model.output_dim, self.device)
 
         # Data
         self.train_dataloader = train_dataloader
@@ -77,7 +215,7 @@ class Trainer:
         self.scaler = GradScaler(enabled=config.mixed_precision)
 
         # Metrics tracking
-        self.best_val_loss = float('inf')
+        self.best_val_metric = float('-inf')  # Changed from best_val_loss
         self.patience_counter = 0
         self.global_step = 0
 
@@ -97,7 +235,7 @@ class Trainer:
             'scaler_state_dict': self.scaler.state_dict(),
             'config': self.config,
             'global_step': self.global_step,
-            'best_val_loss': self.best_val_loss
+            'best_val_metric': self.best_val_metric
         }
 
         # Save latest checkpoint
@@ -116,14 +254,13 @@ class Trainer:
         self.lr_scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
         self.global_step = checkpoint['global_step']
-        self.best_val_loss = checkpoint['best_val_loss']
+        self.best_val_metric = checkpoint['best_val_metric']
 
     @torch.no_grad()
     def evaluate(self):
         self.model.eval()
         total_loss = 0
-        correct_predictions = 0
-        total_predictions = 0
+        all_metrics = []
 
         for batch in self.val_dataloader:
             tokens, codes = batch
@@ -133,19 +270,20 @@ class Trainer:
             with autocast(enabled=self.config.mixed_precision):
                 outputs = self.model(tokens)
                 loss = self.criterion(outputs.view(-1, self.model.output_dim), codes.view(-1))
-
-                # Calculate accuracy
-                pred = outputs.argmax(dim=-1)
-                correct_predictions += (pred == codes).sum().item()
-                total_predictions += codes.numel()
+                metrics = self.metrics.calculate_metrics(outputs, codes)
+                metrics['loss'] = loss.item()
+                all_metrics.append(metrics)
 
             total_loss += loss.item() * tokens.size(0)
 
-        avg_loss = total_loss / len(self.val_dataloader.dataset)
-        accuracy = correct_predictions / total_predictions
+        # Average metrics across batches
+        avg_metrics = {}
+        for key in all_metrics[0].keys():
+            if key != 'region_accuracies':
+                avg_metrics[key] = sum(m[key] for m in all_metrics) / len(all_metrics)
 
         self.model.train()
-        return {'loss': avg_loss, 'accuracy': accuracy}
+        return avg_metrics
 
     def train(self):
         print(f"Starting training on device: {self.device}")
@@ -155,8 +293,7 @@ class Trainer:
 
         for epoch in range(self.config.epochs):
             epoch_loss = 0
-            epoch_correct = 0
-            epoch_total = 0
+            epoch_metrics = []
 
             progress_bar = tqdm(self.train_dataloader, desc=f"Epoch {epoch}")
 
@@ -170,13 +307,10 @@ class Trainer:
                     outputs = self.model(tokens)
                     loss = self.criterion(outputs.view(-1, self.model.output_dim), codes.view(-1))
 
-                # Calculate accuracy
-                pred = outputs.argmax(dim=-1)
-                correct = (pred == codes).sum().item()
-                total = codes.numel()
-
-                epoch_correct += correct
-                epoch_total += total
+                # Calculate metrics
+                with torch.no_grad():
+                    batch_metrics = self.metrics.calculate_metrics(outputs, codes)
+                    epoch_metrics.append(batch_metrics)
 
                 # Backward pass with gradient scaling
                 self.scaler.scale(loss).backward()
@@ -200,7 +334,7 @@ class Trainer:
                 # Update progress bar
                 progress_bar.set_postfix({
                     'loss': f"{loss.item():.4f}",
-                    'acc': f"{correct/total:.4f}",
+                    'top5_acc': f"{batch_metrics['top5_acc']:.4f}",
                     'lr': f"{self.optimizer.param_groups[0]['lr']:.2e}"
                 })
 
@@ -208,7 +342,9 @@ class Trainer:
                 if self.global_step % self.config.log_steps == 0:
                     metrics = {
                         'train_loss': loss.item(),
-                        'train_accuracy': correct/total,
+                        'train_top5_acc': batch_metrics['top5_acc'],
+                        'train_spatial_coherence': batch_metrics['spatial_coherence'],
+                        'train_distribution_similarity': batch_metrics['distribution_similarity'],
                         'learning_rate': self.optimizer.param_groups[0]['lr'],
                         'epoch': epoch,
                         'step': self.global_step,
@@ -223,17 +359,25 @@ class Trainer:
 
                     print(f"\nStep {self.global_step} validation:")
                     print(f"Loss: {val_metrics['loss']:.4f}")
-                    print(f"Accuracy: {val_metrics['accuracy']:.4f}")
-
+                    print(f"Top-1 Accuracy: {val_metrics['exact_match_acc']:.4f}")
+                    print(f"Top-5 Accuracy: {val_metrics['top5_acc']:.4f}")
+                    print(f"Spatial Coherence: {val_metrics['spatial_coherence']:.4f}")
+                    print(f"Distribution Similarity: {val_metrics['distribution_similarity']:.4f}")
                     if self.config.wandb_project:
-                        wandb.log({
-                            'val_loss': val_metrics['loss'],
-                            'val_accuracy': val_metrics['accuracy']
-                        })
+                                            wandb.log({
+                                                'val_loss': val_metrics['loss'],
+                                                'val_top1_acc': val_metrics['exact_match_acc'],
+                                                'val_top5_acc': val_metrics['top5_acc'],
+                                                'val_spatial_coherence': val_metrics['spatial_coherence'],
+                                                'val_distribution_similarity': val_metrics['distribution_similarity']
+                                            })
 
                     # Early stopping and model saving
-                    if val_metrics['loss'] < self.best_val_loss - self.config.min_delta:
-                        self.best_val_loss = val_metrics['loss']
+                    # Use combination of accuracy and distribution similarity as metric
+                    combined_metric = val_metrics['top5_acc'] * 0.6 + val_metrics['distribution_similarity'] * 0.4
+
+                    if combined_metric > self.best_val_metric + self.config.min_delta:
+                        self.best_val_metric = combined_metric
                         self.patience_counter = 0
                         self.save_checkpoint(is_best=True)
                     else:
@@ -250,18 +394,22 @@ class Trainer:
                     self.save_checkpoint()
 
             # End of epoch statistics
-            epoch_loss = epoch_loss / len(self.train_dataloader)
-            epoch_accuracy = epoch_correct / epoch_total
+            avg_epoch_metrics = {}
+            for key in epoch_metrics[0].keys():
+                if key != 'region_accuracies':
+                    avg_epoch_metrics[key] = sum(m[key] for m in epoch_metrics) / len(epoch_metrics)
 
             print(f"\nEpoch {epoch} completed:")
-            print(f"Average loss: {epoch_loss:.4f}")
-            print(f"Average accuracy: {epoch_accuracy:.4f}")
+            print(f"Average loss: {epoch_loss / len(self.train_dataloader):.4f}")
+            print(f"Average top-5 accuracy: {avg_epoch_metrics['top5_acc']:.4f}")
+            print(f"Average spatial coherence: {avg_epoch_metrics['spatial_coherence']:.4f}")
+            print(f"Average distribution similarity: {avg_epoch_metrics['distribution_similarity']:.4f}")
 
             if self.config.wandb_project:
                 wandb.log({
                     'epoch': epoch,
-                    'epoch_loss': epoch_loss,
-                    'epoch_accuracy': epoch_accuracy
+                    'epoch_loss': epoch_loss / len(self.train_dataloader),
+                    **{f'epoch_{k}': v for k, v in avg_epoch_metrics.items()}
                 })
 
 def main():
@@ -269,7 +417,7 @@ def main():
     from torch.utils.data import DataLoader
     from encoder.model import TransformerConfig, TransformerEncoder
     from datasets.text_latent import TextToLatentDataset
-    from utils import set_seed  # Import the set_seed function
+    from utils import set_seed
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--train_data", type=str, required=True)
@@ -280,7 +428,7 @@ def main():
     parser.add_argument("--learning_rate", type=float, default=3e-4)
     parser.add_argument("--output_dir", type=str, default="checkpoints")
     parser.add_argument("--wandb_project", type=str)
-    parser.add_argument("--seed", type=int, default=12, help="Random seed for reproducibility")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     args = parser.parse_args()
 
     # Set random seed
@@ -332,19 +480,24 @@ def main():
         wandb_project=args.wandb_project
     )
 
+    # Validate setup
+    validate_training_setup(train_dataset, val_dataset, model, training_config)
+
     # Initialize trainer and start training
     trainer = Trainer(model, train_dataloader, val_dataloader, training_config)
     trainer.train()
 
 if __name__ == "__main__":
     main()
-# to run
+
+# To run code
 # python train_encoder.py \
-    # --train_data datasets/processed_train.npy \
-    # --val_data datasets/processed_val.npy \
-    # --vocab_path datasets/vocabulary.json \
-    # --batch_size 32 \
-    # --epochs 100 \
-    # --learning_rate 3e-4 \
-    # --output_dir checkpoints \
-    # --wandb_project text-to-latent
+#     --train_data datasets/processed_train.npy \
+#     --val_data datasets/processed_val.npy \
+#     --vocab_path datasets/vocabulary.json \
+#     --batch_size 32 \
+#     --epochs 100 \
+#     --learning_rate 3e-4 \
+#     --output_dir checkpoints \
+#     --wandb_project text-to-latent \
+#     --seed 42
