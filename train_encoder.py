@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 import wandb
 from pathlib import Path
 from tqdm import tqdm
@@ -29,11 +29,11 @@ class TrainingConfig:
     # Save/Load
     output_dir: str = "checkpoints"
     save_steps: int = 500
-    eval_steps: int = 100
+    eval_steps: int = 200
 
     # Early stopping
-    patience: int = 5
-    min_delta: float = 0.001
+    patience: int = 10          # Increase from 5 to 10
+    min_delta: float = 0.0001   # Decrease from 0.001 to 0.0001
 
     # Logging
     wandb_project: Optional[str] = None
@@ -48,15 +48,14 @@ class TransformerMetrics:
     def calculate_metrics(self, outputs: torch.Tensor, targets: torch.Tensor) -> Dict:
         """
         Calculate comprehensive metrics for text-to-latent prediction.
-
-        Args:
-            outputs: Model predictions (batch_size, height, width, n_embeddings)
-            targets: Ground truth codes (batch_size, height, width)
-
-        Returns:
-            dict: Dictionary of metrics
         """
         batch_size = outputs.size(0)
+
+        # If targets are scalar (or have only one value per sample), assume a 1x1 grid.
+        if targets.dim() < 3 or (targets.dim() == 2 and targets.size(1) == 1):
+            h, w = 1, 1
+        else:
+            h, w = targets.shape[1:3]
 
         # 1. Top-k accuracies (k=1,3,5)
         topk_acc = {}
@@ -66,42 +65,45 @@ class TransformerMetrics:
             topk_acc[f'top{k}_acc'] = correct_topk.float().mean().item()
 
         # 2. Per-region accuracy (divide spatial dimensions into 3x3 grid)
-        h, w = targets.shape[1:3]
-        h_splits = torch.linspace(0, h, 4, dtype=torch.long)
-        w_splits = torch.linspace(0, w, 4, dtype=torch.long)
         region_acc = torch.zeros(9, device=self.device)
-
-        idx = 0
-        for i in range(3):
-            for j in range(3):
-                region_pred = outputs[:, h_splits[i]:h_splits[i+1], w_splits[j]:w_splits[j+1]]
-                region_target = targets[:, h_splits[i]:h_splits[i+1], w_splits[j]:w_splits[j+1]]
-
-                pred_indices = region_pred.argmax(dim=-1)
-                region_acc[idx] = (pred_indices == region_target).float().mean()
-                idx += 1
+        if h == 1 and w == 1:
+            # If there is only one spatial element, region accuracy is just the overall accuracy.
+            region_acc[:] = topk_acc['top1_acc']
+        else:
+            idx = 0
+            h_splits = torch.linspace(0, h, 4, dtype=torch.long)
+            w_splits = torch.linspace(0, w, 4, dtype=torch.long)
+            for i in range(3):
+                for j in range(3):
+                    region_pred = outputs[:, h_splits[i]:h_splits[i+1], w_splits[j]:w_splits[j+1]]
+                    region_target = targets[:, h_splits[i]:h_splits[i+1], w_splits[j]:w_splits[j+1]]
+                    pred_indices = region_pred.argmax(dim=-1)
+                    region_acc[idx] = (pred_indices == region_target).float().mean()
+                    idx += 1
 
         # 3. Codebook usage distribution similarity
         pred_dist = torch.zeros(self.n_embeddings, device=self.device)
         target_dist = torch.zeros(self.n_embeddings, device=self.device)
-
         pred_indices = outputs.argmax(dim=-1)
         for i in range(self.n_embeddings):
             pred_dist[i] = (pred_indices == i).float().mean()
             target_dist[i] = (targets == i).float().mean()
-
         distribution_similarity = F.cosine_similarity(pred_dist.unsqueeze(0),
-                                                    target_dist.unsqueeze(0))[0].item()
+                                                      target_dist.unsqueeze(0))[0].item()
 
         # 4. Spatial coherence score
-        # How often neighboring predictions match when neighboring targets match
-        pred_matches = (pred_indices[:, :-1, :] == pred_indices[:, 1:, :])
-        target_matches = (targets[:, :-1, :] == targets[:, 1:, :])
-        vertical_coherence = (pred_matches == target_matches).float().mean().item()
+        if h == 1 and w == 1:
+            # With a single element, spatial coherence is not defined; use overall accuracy.
+            spatial_coherence = topk_acc['top1_acc']
+        else:
+            pred_matches = (pred_indices[:, :-1, :] == pred_indices[:, 1:, :])
+            target_matches = (targets[:, :-1, :] == targets[:, 1:, :])
+            vertical_coherence = (pred_matches == target_matches).float().mean().item()
 
-        pred_matches = (pred_indices[:, :, :-1] == pred_indices[:, :, 1:])
-        target_matches = (targets[:, :, :-1] == targets[:, :, 1:])
-        horizontal_coherence = (pred_matches == target_matches).float().mean().item()
+            pred_matches = (pred_indices[:, :, :-1] == pred_indices[:, :, 1:])
+            target_matches = (targets[:, :, :-1] == targets[:, :, 1:])
+            horizontal_coherence = (pred_matches == target_matches).float().mean().item()
+            spatial_coherence = (vertical_coherence + horizontal_coherence) / 2
 
         # 5. Average prediction confidence
         confidence = torch.softmax(outputs, dim=-1).amax(dim=-1).mean().item()
@@ -113,9 +115,10 @@ class TransformerMetrics:
             'region_accuracies': region_acc.tolist(),
             'avg_region_acc': region_acc.mean().item(),
             'distribution_similarity': distribution_similarity,
-            'spatial_coherence': (vertical_coherence + horizontal_coherence) / 2,
+            'spatial_coherence': spatial_coherence,
             'confidence': confidence
         }
+
 
 def validate_training_setup(
     train_dataset,
@@ -162,12 +165,14 @@ def validate_training_setup(
         raise ValueError("Dataset contains token IDs outside vocabulary range")
 
     with torch.no_grad():
-            sample_output = model(sample_tokens.unsqueeze(0))
-            if sample_output.shape[1:] != expected_output_shape[1:]:
-                raise ValueError(
-                    f"Model output shape {sample_output.shape[1:]} "
-                    f"doesn't match expected {expected_output_shape[1:]}"
-                )
+        sample_output = model(sample_tokens.unsqueeze(0))
+        # For classification, sample_output should have shape (batch, num_classes)
+        # and sample_codes is a scalar target (or a 1D tensor for a batch).
+        if sample_output.dim() != 2 or sample_output.size(1) != model.output_dim:
+            raise ValueError(
+                f"Model output shape {sample_output.shape} doesn't match expected "
+                f"shape (batch, {model.output_dim}) for classification."
+            )
 
     # Print training setup summary
     print("\nTraining Setup Summary:")
@@ -182,7 +187,6 @@ def validate_training_setup(
     print(f"Learning rate: {config.learning_rate}")
     print(f"Number of epochs: {config.epochs}\n")
 
-{{REWRITTEN_CODE}}
 class Trainer:
     def __init__(
         self,
@@ -222,7 +226,7 @@ class Trainer:
         )
 
         # Mixed precision
-        self.scaler = GradScaler(enabled=config.mixed_precision)
+        self.scaler = GradScaler(device='cuda', enabled=config.mixed_precision)
 
         # Metrics tracking
         self.best_val_metric = float('-inf')
@@ -365,7 +369,7 @@ class Trainer:
             tokens, codes = batch
             tokens = tokens.to(self.device)
             codes = codes.to(self.device)
-            with autocast(enabled=self.config.mixed_precision):
+            with autocast(device_type=self.device.type, enabled=self.config.mixed_precision):
                 outputs = self.model(tokens)
                 loss = self.criterion(outputs.view(-1, self.model.output_dim), codes.view(-1))
                 metrics = self.metrics.calculate_metrics(outputs, codes)
@@ -397,18 +401,13 @@ class Trainer:
                 tokens, codes = batch
                 tokens = tokens.to(self.device)
                 codes = codes.to(self.device)
-                with autocast(enabled=self.config.mixed_precision):
+                with autocast(device_type=self.device.type, enabled=self.config.mixed_precision):
                     outputs = self.model(tokens)
                     loss = self.criterion(outputs.view(-1, self.model.output_dim), codes.view(-1))
                 with torch.no_grad():
                     batch_metrics = self.metrics.calculate_metrics(outputs, codes)
                     epoch_metrics.append(batch_metrics)
                 self.scaler.scale(loss).backward()
-                self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(),
-                    self.config.max_grad_norm
-                )
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
                 self.optimizer.zero_grad(set_to_none=True)
@@ -438,13 +437,18 @@ class Trainer:
                             'val_spatial_coherence': val_metrics['spatial_coherence'],
                             'val_distribution_similarity': val_metrics['distribution_similarity']
                         })
-                    combined_metric = val_metrics['top5_acc'] * 0.6 + val_metrics['distribution_similarity'] * 0.4
-                    if combined_metric > self.best_val_metric + self.config.min_delta:
-                        self.best_val_metric = combined_metric
-                        self.patience_counter = 0
-                        self.save_checkpoint(is_best=True)
-                    else:
-                        self.patience_counter += 1
+                        combined_metric = (
+                            val_metrics['top5_acc'] * 0.4 +
+                            val_metrics['distribution_similarity'] * 0.3 +
+                            val_metrics['spatial_coherence'] * 0.3
+                        )
+
+                        if combined_metric > self.best_val_metric + self.config.min_delta:
+                            self.best_val_metric = combined_metric
+                            self.patience_counter = 0
+                            self.save_checkpoint(is_best=True)
+                        else:
+                            self.patience_counter += 1
                     if self.patience_counter >= self.config.patience:
                         print(f"Early stopping triggered at step {self.global_step}")
                         return
@@ -482,7 +486,7 @@ def main():
     parser.add_argument("--learning_rate", type=float, default=3e-4)
     parser.add_argument("--output_dir", type=str, default="checkpoints")
     parser.add_argument("--wandb_project", type=str)
-    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+    parser.add_argument("--seed", type=int, default=12, help="Random seed for reproducibility")
     parser.add_argument("--resume_from_checkpoint", type=str, help="Path to checkpoint to resume from")
 
     args = parser.parse_args()
@@ -536,7 +540,6 @@ def main():
         wandb_project=args.wandb_project
     )
 
-
     # Validate setup
     validate_training_setup(train_dataset, val_dataset, model, training_config)
 
@@ -558,3 +561,5 @@ if __name__ == "__main__":
 #     --output_dir checkpoints \
 #     --wandb_project text-to-latent \
 #     --seed 42
+
+# python train_encoder.py --train_data datasets/processed_train.npy --val_data datasets/processed_val.npy --wandb_project VQVAE_transformer

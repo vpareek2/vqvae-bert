@@ -65,6 +65,8 @@ class TransformerEncoder(nn.Module):
         # For "classification", output_dim equals the number of classes (e.g., 512 codebook entries).
         # For "embedding", output_dim is the latent dimension you want (e.g., 64 or 128).
         self.output_head = nn.Linear(config.embedding_dim, config.output_dim)
+        self.output_dim = config.output_dim  # <-- Add this line
+
 
         self._init_weights()
 
